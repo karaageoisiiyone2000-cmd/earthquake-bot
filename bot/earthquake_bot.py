@@ -1,11 +1,13 @@
 import asyncio
 import os
 import logging
+import random
 from datetime import datetime, timezone
 from typing import Optional
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import tasks
 
 logging.basicConfig(
@@ -18,14 +20,15 @@ logger = logging.getLogger(__name__)
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 
-# Threshold magnitude to mention @everyone
 EVERYONE_MENTION_THRESHOLD = 5.0
-
-# P2P earthquake info API (free, no key required, returns latest JMA data)
 P2P_INFO_URL = "https://api.p2pquake.net/v2/history?codes=551&limit=5"
 
-# Store IDs of alerts already sent so we don't double-post
 seen_event_ids: set[str] = set()
+
+SAMPLE_LOCATIONS = [
+    "東京都", "大阪府", "神奈川県", "愛知県", "宮城県",
+    "北海道", "福岡県", "静岡県", "熊本県", "新潟県",
+]
 
 
 def magnitude_color(mag: float) -> discord.Color:
@@ -85,13 +88,14 @@ def build_embed(quake: dict) -> tuple[discord.Embed, bool]:
 
     mention_everyone = mag >= EVERYONE_MENTION_THRESHOLD
 
-    title = f"🇯🇵 Earthquake Detected — M{mag:.1f}"
     if mag >= 7.0:
         title = f"🚨 MAJOR EARTHQUAKE — M{mag:.1f}"
     elif mag >= 6.0:
         title = f"⚠️ Strong Earthquake — M{mag:.1f}"
     elif mag >= 5.0:
         title = f"⚠️ Moderate Earthquake — M{mag:.1f}"
+    else:
+        title = f"🇯🇵 Earthquake Detected — M{mag:.1f}"
 
     embed = discord.Embed(
         title=title,
@@ -118,29 +122,165 @@ def build_embed(quake: dict) -> tuple[discord.Embed, bool]:
     return embed, mention_everyone
 
 
+def build_test_embed(mag: float) -> tuple[discord.Embed, bool]:
+    depth = random.randint(5, 60)
+    location = random.choice(SAMPLE_LOCATIONS)
+    scale_options = [10, 20, 30, 40, 45, 50, 55, 60, 70]
+    max_scale = scale_options[min(int(mag) - 1, len(scale_options) - 1)]
+
+    mention_everyone = mag >= EVERYONE_MENTION_THRESHOLD
+
+    if mag >= 7.0:
+        title = f"🚨 [TEST] MAJOR EARTHQUAKE — M{mag:.1f}"
+        tsunami = "⚠️ Tsunami Watch issued"
+    elif mag >= 6.0:
+        title = f"⚠️ [TEST] Strong Earthquake — M{mag:.1f}"
+        tsunami = "None expected"
+    elif mag >= 5.0:
+        title = f"⚠️ [TEST] Moderate Earthquake — M{mag:.1f}"
+        tsunami = "None expected"
+    else:
+        title = f"🇯🇵 [TEST] Earthquake Detected — M{mag:.1f}"
+        tsunami = "None expected"
+
+    embed = discord.Embed(
+        title=title,
+        description="⚠️ **This is a TEST alert — not a real earthquake.**",
+        color=magnitude_color(mag),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="📍 Location", value=location, inline=True)
+    embed.add_field(name="💥 Magnitude", value=f"M{mag:.1f}", inline=True)
+    embed.add_field(name="🕳️ Depth", value=f"{depth} km", inline=True)
+    embed.add_field(
+        name="📊 Max Seismic Intensity",
+        value=scale_label(max_scale),
+        inline=True,
+    )
+    embed.add_field(name="🌊 Tsunami", value=tsunami, inline=True)
+    embed.add_field(
+        name="🕐 Time (UTC)",
+        value=f"<t:{int(datetime.now(timezone.utc).timestamp())}:F>",
+        inline=True,
+    )
+    embed.set_footer(text="[TEST] Source: P2P地震情報 / JMA data")
+
+    return embed, mention_everyone
+
+
 class EarthquakeBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
-        self.channel: Optional[discord.TextChannel] = None
+        self.tree = app_commands.CommandTree(self)
+        self.alert_channel: Optional[discord.TextChannel] = None
+        self._initial_poll_done = False
+        self._monitor_start_time: Optional[datetime] = None
+
+        @self.tree.command(name="ping", description="Check the bot's latency")
+        async def ping(interaction: discord.Interaction):
+            latency_ms = round(self.latency * 1000)
+            embed = discord.Embed(
+                title="🏓 Pong!",
+                description=f"Gateway latency: **{latency_ms} ms**",
+                color=discord.Color.green() if latency_ms < 200 else discord.Color.orange(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(name="status", description="Show the earthquake monitor status")
+        async def status(interaction: discord.Interaction):
+            uptime_str = "Unknown"
+            if self._monitor_start_time:
+                delta = datetime.now(timezone.utc) - self._monitor_start_time
+                hours, remainder = divmod(int(delta.total_seconds()), 3600)
+                minutes, seconds = divmod(remainder, 60)
+                uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+            channel_mention = (
+                self.alert_channel.mention
+                if self.alert_channel
+                else f"<#{DISCORD_CHANNEL_ID}> (not found)"
+            )
+
+            embed = discord.Embed(
+                title="📡 Earthquake Monitor Status",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="🟢 Status", value="Online & monitoring", inline=True)
+            embed.add_field(name="⏱️ Uptime", value=uptime_str, inline=True)
+            embed.add_field(name="🔁 Check interval", value="Every 60 seconds", inline=True)
+            embed.add_field(name="📢 Alert channel", value=channel_mention, inline=True)
+            embed.add_field(
+                name="📣 @everyone threshold",
+                value=f"M{EVERYONE_MENTION_THRESHOLD}+",
+                inline=True,
+            )
+            embed.add_field(
+                name="📊 Events tracked",
+                value=str(len(seen_event_ids)),
+                inline=True,
+            )
+            embed.add_field(name="🌐 Data source", value="P2P地震情報 / JMA", inline=False)
+            embed.set_footer(text="Japan Earthquake Monitor")
+            await interaction.response.send_message(embed=embed)
+
+        @self.tree.command(
+            name="test",
+            description="Send a simulated earthquake alert to the alert channel",
+        )
+        @app_commands.describe(
+            magnitude="Magnitude of the test earthquake (1.0–9.0, default: 6.5)"
+        )
+        async def test(
+            interaction: discord.Interaction,
+            magnitude: app_commands.Range[float, 1.0, 9.0] = 6.5,
+        ):
+            if self.alert_channel is None:
+                await interaction.response.send_message(
+                    "❌ Alert channel not found. Check `DISCORD_CHANNEL_ID`.",
+                    ephemeral=True,
+                )
+                return
+
+            embed, mention_everyone = build_test_embed(magnitude)
+            content = "@everyone *(test)*" if mention_everyone else None
+
+            await self.alert_channel.send(content=content, embed=embed)
+            await interaction.response.send_message(
+                f"✅ Test alert (M{magnitude:.1f}) sent to {self.alert_channel.mention}.",
+                ephemeral=True,
+            )
+            logger.info(
+                "Test alert triggered by %s — M%.1f", interaction.user, magnitude
+            )
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        logger.info("Slash commands synced globally")
 
     async def on_ready(self):
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         channel = self.get_channel(DISCORD_CHANNEL_ID)
         if channel is None:
-            logger.error("Channel %d not found — check DISCORD_CHANNEL_ID", DISCORD_CHANNEL_ID)
+            logger.error(
+                "Channel %d not found — check DISCORD_CHANNEL_ID", DISCORD_CHANNEL_ID
+            )
         else:
-            self.channel = channel
+            self.alert_channel = channel
             logger.info("Alert channel: #%s", channel.name)
         self.check_earthquakes.start()
 
     @tasks.loop(seconds=60)
     async def check_earthquakes(self):
-        if self.channel is None:
+        if self.alert_channel is None:
             return
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(P2P_INFO_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.get(
+                    P2P_INFO_URL, timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
                     if resp.status != 200:
                         logger.warning("API returned status %d", resp.status)
                         return
@@ -151,23 +291,30 @@ class EarthquakeBot(discord.Client):
 
         new_quakes = []
         for quake in data:
-            event_id = quake.get("id") or quake.get("_id") or str(quake.get("time", ""))
+            event_id = (
+                quake.get("id") or quake.get("_id") or str(quake.get("time", ""))
+            )
             if event_id and event_id not in seen_event_ids:
                 seen_event_ids.add(event_id)
-                # Skip if this is the very first poll (populate seen set without alerting)
-                if not hasattr(self, "_initial_poll_done"):
+                if not self._initial_poll_done:
                     continue
                 new_quakes.append(quake)
 
-        if not hasattr(self, "_initial_poll_done"):
+        if not self._initial_poll_done:
             self._initial_poll_done = True
-            logger.info("Initial poll complete — %d recent events loaded, monitoring for new ones.", len(seen_event_ids))
-            await self.channel.send(
+            self._monitor_start_time = datetime.now(timezone.utc)
+            logger.info(
+                "Initial poll complete — %d recent events loaded, monitoring for new ones.",
+                len(seen_event_ids),
+            )
+            await self.alert_channel.send(
                 embed=discord.Embed(
                     title="🟢 Earthquake Monitor Active",
                     description=(
                         "Monitoring Japan earthquake data every minute.\n"
-                        f"Alerts will appear here. M{EVERYONE_MENTION_THRESHOLD}+ events will mention @everyone."
+                        f"Alerts will appear here. M{EVERYONE_MENTION_THRESHOLD}+"
+                        " events will mention @everyone.\n\n"
+                        "**Slash commands:** `/ping` `/status` `/test`"
                     ),
                     color=discord.Color.green(),
                     timestamp=datetime.now(timezone.utc),
@@ -179,8 +326,12 @@ class EarthquakeBot(discord.Client):
             try:
                 embed, mention_everyone = build_embed(quake)
                 content = "@everyone" if mention_everyone else None
-                await self.channel.send(content=content, embed=embed)
-                mag = quake.get("earthquake", {}).get("hypocenter", {}).get("magnitude", "?")
+                await self.alert_channel.send(content=content, embed=embed)
+                mag = (
+                    quake.get("earthquake", {})
+                    .get("hypocenter", {})
+                    .get("magnitude", "?")
+                )
                 logger.info("Alert sent for M%s event", mag)
             except Exception as exc:
                 logger.error("Failed to send alert: %s", exc)
