@@ -462,8 +462,9 @@ class EarthquakeBot(discord.Client):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def setup_hook(self):
+        # グローバル同期（全サーバー反映には最大1時間かかる場合あり）
         await self.tree.sync()
-        logger.info("スラッシュコマンドを同期しました")
+        logger.info("グローバルスラッシュコマンドを同期しました")
 
     async def on_ready(self):
         logger.info("ログイン完了: %s (ID: %s)", self.user, self.user.id)
@@ -473,6 +474,11 @@ class EarthquakeBot(discord.Client):
         else:
             self.alert_channel = channel
             logger.info("通知チャンネル: #%s", channel.name)
+            # ギルド限定の即時同期（グローバル同期は最大1時間かかるため）
+            guild = channel.guild
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            logger.info("ギルド '%s' にスラッシュコマンドを即時同期しました: %s", guild.name, [c.name for c in synced])
         self.check_earthquakes.start()
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
