@@ -19,10 +19,16 @@ logger = logging.getLogger(__name__)
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 
-# @everyone 発動条件
-#   震度: 震度5弱（scale=45）以上
-#   津波: 津波注意報・津波警報・大津波警報のいずれか
-SCALE_EVERYONE_THRESHOLD = 45          # 震度5弱
+# ロール名（サーバー内のロール名と一致させること）
+EARTHQUAKE_ROLE_NAME = "地震速報"
+
+# メンション条件
+#   震度3・4   → @地震速報 ロールをメンション
+#   震度5弱以上 → @everyone
+#   津波注意報・津波警報・大津波警報 → @everyone
+SCALE_ROLE_MIN   = 30   # 震度3
+SCALE_ROLE_MAX   = 40   # 震度4
+SCALE_EVERYONE_THRESHOLD = 45   # 震度5弱
 TSUNAMI_EVERYONE_CODES = {"Watch", "Warning", "MajorWarning"}
 
 # 10秒ごとにポーリング（1分間6リクエスト）
@@ -119,16 +125,35 @@ def alert_title(mag: float, tsunami: str, test: bool = False) -> str:
     return f"{prefix}🇯🇵 地震情報 — M{mag:.1f}"
 
 
-def alert_content(max_scale: int, tsunami: str, test: bool = False) -> Optional[str]:
-    """@everyone メッセージ本文（不要なら None）"""
-    if not should_mention_everyone(max_scale, tsunami):
-        return None
+def should_mention_role(max_scale: int) -> bool:
+    """震度3・4 のとき役職ロールをメンションする。"""
+    return SCALE_ROLE_MIN <= max_scale <= SCALE_ROLE_MAX
+
+
+def alert_content(
+    max_scale: int,
+    tsunami: str,
+    role: Optional[discord.Role] = None,
+    test: bool = False,
+) -> Optional[str]:
+    """メンション付きメッセージ本文を返す。不要なら None。"""
     suffix = " *(テスト)*" if test else ""
-    if tsunami == "MajorWarning":
-        return f"🚨 大津波警報 🚨\n@everyone{suffix}"
-    if tsunami in ("Watch", "Warning"):
-        return f"🌊 津波情報 🌊\n@everyone{suffix}"
-    return f"🚨 緊急地震速報 🚨\n@everyone{suffix}"
+
+    # @everyone 条件: 震度5弱以上、または津波系
+    if should_mention_everyone(max_scale, tsunami):
+        if tsunami == "MajorWarning":
+            return f"🚨 大津波警報 🚨\n@everyone{suffix}"
+        if tsunami in ("Watch", "Warning"):
+            return f"🌊 津波情報 🌊\n@everyone{suffix}"
+        return f"🚨 緊急地震速報 🚨\n@everyone{suffix}"
+
+    # 役職ロール条件: 震度3・4
+    if should_mention_role(max_scale):
+        mention = role.mention if role else ""
+        if mention:
+            return f"{mention}{suffix}"
+
+    return None
 
 
 def quake_to_embed(
@@ -203,14 +228,14 @@ def parse_quake(quake: dict) -> dict:
     }
 
 
-def build_alert(quake: dict) -> tuple[discord.Embed, Optional[str]]:
+def build_alert(quake: dict, role: Optional[discord.Role] = None) -> tuple[discord.Embed, Optional[str]]:
     p = parse_quake(quake)
     embed = quake_to_embed(**p)
-    content = alert_content(p["max_scale"], p["tsunami"])
+    content = alert_content(p["max_scale"], p["tsunami"], role=role)
     return embed, content
 
 
-def build_test_alert(mag: float) -> tuple[discord.Embed, Optional[str]]:
+def build_test_alert(mag: float, role: Optional[discord.Role] = None) -> tuple[discord.Embed, Optional[str]]:
     depth = random.randint(5, 60)
     location = random.choice(SAMPLE_LOCATIONS)
     scale_opts = [10, 20, 30, 40, 45, 50, 55, 60, 70]
@@ -219,11 +244,14 @@ def build_test_alert(mag: float) -> tuple[discord.Embed, Optional[str]]:
     time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     embed = quake_to_embed(mag, location, depth, max_scale, tsunami, time_str, test=True)
-    content = alert_content(max_scale, tsunami, test=True)
+    content = alert_content(max_scale, tsunami, role=role, test=True)
     return embed, content
 
 
-EVERYONE_CONDITION_TEXT = f"震度5弱以上、または津波注意報・津波警報・大津波警報"
+EVERYONE_CONDITION_TEXT = (
+    f"震度5弱（{SCALE_EVERYONE_THRESHOLD}）以上、または津波注意報・津波警報・大津波警報 → @everyone\n"
+    f"震度3・4 → @{EARTHQUAKE_ROLE_NAME} ロールをメンション"
+)
 
 
 def build_startup_embed(channel: discord.TextChannel) -> discord.Embed:
@@ -314,7 +342,8 @@ class EarthquakeBot(discord.Client):
                     ephemeral=True,
                 )
                 return
-            embed, content = build_test_alert(magnitude)
+            role = discord.utils.get(self.alert_channel.guild.roles, name=EARTHQUAKE_ROLE_NAME)
+            embed, content = build_test_alert(magnitude, role=role)
             await self.alert_channel.send(content=content, embed=embed)
             await interaction.response.send_message(
                 f"✅ テストアラート（M{magnitude:.1f}）を {self.alert_channel.mention} に送信しました。",
@@ -435,9 +464,13 @@ class EarthquakeBot(discord.Client):
             await self.alert_channel.send(embed=build_startup_embed(self.alert_channel))
             return
 
+        role = discord.utils.get(self.alert_channel.guild.roles, name=EARTHQUAKE_ROLE_NAME)
+        if role is None:
+            logger.warning("ロール '%s' が見つかりません。震度3・4 の通知はメンションなしで送信されます。", EARTHQUAKE_ROLE_NAME)
+
         for quake in new_quakes:
             try:
-                embed, content = build_alert(quake)
+                embed, content = build_alert(quake, role=role)
                 await self.alert_channel.send(content=content, embed=embed)
                 p = parse_quake(quake)
                 logger.info("アラート送信: M%s 最大震度=%s 津波=%s", p["mag"], p["max_scale"], p["tsunami"])
