@@ -22,6 +22,11 @@ DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 EVERYONE_THRESHOLD = 5.0
 MAJOR_THRESHOLD = 7.0
 
+# 10秒ごとにポーリング（1分間6リクエスト）
+# 2秒はAPIへの負荷が高くIPブロックのリスクあり。
+# 気象庁の地震情報自体が発生から約30〜60秒後の配信のため、10秒で実質最速。
+POLL_INTERVAL_SECONDS = 10
+
 P2P_INFO_URL = "https://api.p2pquake.net/v2/history?codes=551&limit=5"
 P2P_HISTORY_URL = "https://api.p2pquake.net/v2/history?codes=551&limit={limit}"
 
@@ -184,7 +189,7 @@ def build_startup_embed(channel: discord.TextChannel) -> discord.Embed:
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="🟢 監視状態", value="稼働中", inline=True)
-    embed.add_field(name="🔁 監視頻度", value="60秒ごと", inline=True)
+    embed.add_field(name="🔁 監視頻度", value=f"{POLL_INTERVAL_SECONDS}秒ごと", inline=True)
     embed.add_field(name="📢 通知チャンネル", value=channel.mention, inline=True)
     embed.add_field(name="📣 @everyone 発動条件", value=f"M{EVERYONE_THRESHOLD}以上", inline=True)
     embed.add_field(name="🌐 データソース", value="P2P地震情報 / 気象庁（JMA）", inline=True)
@@ -243,7 +248,7 @@ class EarthquakeBot(discord.Client):
             )
             embed.add_field(name="監視状態", value=is_ready, inline=True)
             embed.add_field(name="⏱️ 稼働時間", value=uptime, inline=True)
-            embed.add_field(name="🔁 監視頻度", value="60秒ごと", inline=True)
+            embed.add_field(name="🔁 監視頻度", value=f"{POLL_INTERVAL_SECONDS}秒ごと", inline=True)
             embed.add_field(name="📢 通知チャンネル", value=ch, inline=True)
             embed.add_field(name="📣 @everyone 発動条件", value=f"M{EVERYONE_THRESHOLD}以上", inline=True)
             embed.add_field(name="📊 検知済みイベント数", value=str(len(seen_event_ids)), inline=True)
@@ -350,7 +355,7 @@ class EarthquakeBot(discord.Client):
             logger.info("通知チャンネル: #%s", channel.name)
         self.check_earthquakes.start()
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def check_earthquakes(self):
         if self.alert_channel is None:
             return
