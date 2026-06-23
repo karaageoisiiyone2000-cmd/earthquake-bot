@@ -249,7 +249,7 @@ def build_test_alert(mag: float, role: Optional[discord.Role] = None) -> tuple[d
 
 
 EVERYONE_CONDITION_TEXT = (
-    f"震度5弱（{SCALE_EVERYONE_THRESHOLD}）以上、または津波注意報・津波警報・大津波警報 → @everyone\n"
+    f"震度5弱以上、または津波注意報・津波警報・大津波警報 → @everyone\n"
     f"震度3・4 → @{EARTHQUAKE_ROLE_NAME} ロールをメンション"
 )
 
