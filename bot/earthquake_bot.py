@@ -415,39 +415,45 @@ class EarthquakeBot(discord.Client):
             await interaction.followup.send(embed=embed)
 
         # ── /help ───────────────────────────────────────────────────────────
+        # カテゴリとパラメータのメタ情報
+        # 新しいコマンドを追加した場合はここに追記するだけで /help に反映される。
+        # 未登録のコマンドは「その他」として自動的に表示される。
+        COMMAND_META: dict[str, dict] = {
+            "ping":    {"category": "🔧 基本コマンド", "params": ""},
+            "status":  {"category": "🔧 基本コマンド", "params": ""},
+            "test":    {"category": "🧪 テスト",       "params": " [マグニチュード: 1.0〜9.0]"},
+            "history": {"category": "📜 履歴",         "params": " [件数: 1〜20]"},
+            "help":    {"category": "🔧 基本コマンド", "params": ""},
+        }
+        CATEGORY_ORDER = ["🔧 基本コマンド", "🧪 テスト", "📜 履歴", "その他"]
+
         @self.tree.command(name="help", description="利用可能なコマンドの一覧を表示します")
         async def help(interaction: discord.Interaction):
+            # 登録済みコマンドをツリーから動的に取得
+            commands = sorted(self.tree.get_commands(), key=lambda c: c.name)
+
+            # カテゴリごとにグループ化
+            groups: dict[str, list[str]] = {cat: [] for cat in CATEGORY_ORDER}
+            for cmd in commands:
+                meta = COMMAND_META.get(cmd.name, {})
+                category = meta.get("category", "その他")
+                params = meta.get("params", "")
+                groups.setdefault(category, [])
+                groups[category].append(f"`/{cmd.name}{params}`\n{cmd.description}")
+
             embed = discord.Embed(
                 title="📖 地震速報Bot コマンド一覧",
                 color=discord.Color.blurple(),
                 timestamp=datetime.now(timezone.utc),
             )
-            embed.add_field(
-                name="🔧 基本コマンド",
-                value=(
-                    "`/ping`\nBotの応答速度を確認します。\n\n"
-                    "`/status`\nBotの稼働状況や監視設定を表示します。"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="🧪 テスト",
-                value=(
-                    "`/test [マグニチュード]`\n"
-                    "地震速報のテスト通知を送信します。\n"
-                    "マグニチュードを指定可能（1.0〜9.0、デフォルト: 6.5）。"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="📜 履歴",
-                value=(
-                    "`/history [件数]`\n"
-                    "最近の地震履歴を表示します。\n"
-                    "件数を指定可能（1〜20、デフォルト: 5）。"
-                ),
-                inline=False,
-            )
+            for category in CATEGORY_ORDER:
+                entries = groups.get(category, [])
+                if entries:
+                    embed.add_field(
+                        name=category,
+                        value="\n\n".join(entries),
+                        inline=False,
+                    )
             embed.add_field(
                 name="ℹ️ 通知ルール",
                 value=(
@@ -458,7 +464,7 @@ class EarthquakeBot(discord.Client):
                 ),
                 inline=False,
             )
-            embed.set_footer(text="地震速報Bot v1.0　|　" + FOOTER_TEXT)
+            embed.set_footer(text=f"登録コマンド数: {len(commands)}　|　地震速報Bot v1.0　|　{FOOTER_TEXT}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def setup_hook(self):
