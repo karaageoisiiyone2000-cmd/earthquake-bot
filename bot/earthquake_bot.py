@@ -19,8 +19,11 @@ logger = logging.getLogger(__name__)
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 
-EVERYONE_THRESHOLD = 5.0
-MAJOR_THRESHOLD = 7.0
+# @everyone 発動条件
+#   震度: 震度5弱（scale=45）以上
+#   津波: 津波注意報・津波警報・大津波警報のいずれか
+SCALE_EVERYONE_THRESHOLD = 45          # 震度5弱
+TSUNAMI_EVERYONE_CODES = {"Watch", "Warning", "MajorWarning"}
 
 # 10秒ごとにポーリング（1分間6リクエスト）
 # 2秒はAPIへの負荷が高くIPブロックのリスクあり。
@@ -56,6 +59,16 @@ def magnitude_color(mag: float) -> discord.Color:
     return discord.Color.from_rgb(60, 150, 230)
 
 
+def tsunami_color(code: str) -> discord.Color:
+    if code == "MajorWarning":
+        return discord.Color.from_rgb(180, 0, 0)
+    if code == "Warning":
+        return discord.Color.from_rgb(230, 50, 0)
+    if code == "Watch":
+        return discord.Color.from_rgb(0, 100, 200)
+    return discord.Color.blurple()
+
+
 def scale_label(scale: int) -> str:
     mapping = {
         10: "震度1",
@@ -79,12 +92,24 @@ def tsunami_label(code: str) -> str:
         "NonEffective": "若干の海面変動あり（被害の心配なし）",
         "Watch":        "⚠️ 津波注意報",
         "Warning":      "🚨 津波警報",
+        "MajorWarning": "🚨🚨 大津波警報",
     }
     return mapping.get(code, code)
 
 
-def alert_title(mag: float, test: bool = False) -> str:
+def should_mention_everyone(max_scale: int, tsunami: str) -> bool:
+    """震度5弱以上、または津波注意報・警報・大津波警報のとき @everyone を発動する。"""
+    return max_scale >= SCALE_EVERYONE_THRESHOLD or tsunami in TSUNAMI_EVERYONE_CODES
+
+
+def alert_title(mag: float, tsunami: str, test: bool = False) -> str:
     prefix = "【テスト】" if test else ""
+    # 津波系タイトルを優先
+    if tsunami == "MajorWarning":
+        return f"{prefix}🚨 大津波警報 🚨"
+    if tsunami in ("Watch", "Warning"):
+        return f"{prefix}🌊 津波情報 🌊"
+    # 地震規模ベース
     if mag >= 7.0:
         return f"{prefix}🚨 緊急地震速報 🚨"
     if mag >= 6.0:
@@ -92,6 +117,18 @@ def alert_title(mag: float, test: bool = False) -> str:
     if mag >= 5.0:
         return f"{prefix}⚠️ 地震が発生しました — M{mag:.1f}"
     return f"{prefix}🇯🇵 地震情報 — M{mag:.1f}"
+
+
+def alert_content(max_scale: int, tsunami: str, test: bool = False) -> Optional[str]:
+    """@everyone メッセージ本文（不要なら None）"""
+    if not should_mention_everyone(max_scale, tsunami):
+        return None
+    suffix = " *(テスト)*" if test else ""
+    if tsunami == "MajorWarning":
+        return f"🚨 大津波警報 🚨\n@everyone{suffix}"
+    if tsunami in ("Watch", "Warning"):
+        return f"🌊 津波情報 🌊\n@everyone{suffix}"
+    return f"🚨 緊急地震速報 🚨\n@everyone{suffix}"
 
 
 def quake_to_embed(
@@ -103,22 +140,31 @@ def quake_to_embed(
     occurred_at: str,
     test: bool = False,
 ) -> discord.Embed:
-    title = alert_title(mag, test=test)
+    title = alert_title(mag, tsunami, test=test)
 
     description_parts = []
-    if mag >= 7.0 and not test:
+    if tsunami == "MajorWarning" and not test:
+        description_parts.append("**直ちに高台へ避難してください。**\n海岸・河口付近には絶対に近づかないでください。")
+    elif tsunami in ("Watch", "Warning") and not test:
+        description_parts.append("津波に関する情報に注意し、海岸付近には近づかないでください。")
+    elif mag >= 7.0 and not test:
         description_parts.append(f"**マグニチュード {mag:.1f}** の大規模地震が発生しました。\n最新情報に注意してください。")
     if test:
         description_parts.append("⚠️ **これはテスト配信です。実際の地震ではありません。**")
 
+    # 色: 津波警報がある場合は津波色を優先
+    if tsunami in TSUNAMI_EVERYONE_CODES:
+        color = tsunami_color(tsunami)
+    else:
+        color = magnitude_color(mag)
+
     embed = discord.Embed(
         title=title,
         description="\n".join(description_parts) if description_parts else None,
-        color=magnitude_color(mag),
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
 
-    # Time
     try:
         dt = datetime.fromisoformat(occurred_at.replace(" ", "T"))
         dt = dt.replace(tzinfo=timezone.utc)
@@ -160,9 +206,7 @@ def parse_quake(quake: dict) -> dict:
 def build_alert(quake: dict) -> tuple[discord.Embed, Optional[str]]:
     p = parse_quake(quake)
     embed = quake_to_embed(**p)
-    content = None
-    if p["mag"] >= EVERYONE_THRESHOLD:
-        content = "🚨 緊急地震速報 🚨\n@everyone"
+    content = alert_content(p["max_scale"], p["tsunami"])
     return embed, content
 
 
@@ -171,14 +215,15 @@ def build_test_alert(mag: float) -> tuple[discord.Embed, Optional[str]]:
     location = random.choice(SAMPLE_LOCATIONS)
     scale_opts = [10, 20, 30, 40, 45, 50, 55, 60, 70]
     max_scale = scale_opts[min(int(mag) - 1, len(scale_opts) - 1)]
-    tsunami = "Warning" if mag >= 7.0 else "None"
+    tsunami = "MajorWarning" if mag >= 8.0 else "Warning" if mag >= 7.0 else "Watch" if mag >= 6.0 else "None"
     time_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     embed = quake_to_embed(mag, location, depth, max_scale, tsunami, time_str, test=True)
-    content = None
-    if mag >= EVERYONE_THRESHOLD:
-        content = "🚨 緊急地震速報 🚨\n@everyone *(テスト)*"
+    content = alert_content(max_scale, tsunami, test=True)
     return embed, content
+
+
+EVERYONE_CONDITION_TEXT = f"震度5弱以上、または津波注意報・津波警報・大津波警報"
 
 
 def build_startup_embed(channel: discord.TextChannel) -> discord.Embed:
@@ -191,7 +236,7 @@ def build_startup_embed(channel: discord.TextChannel) -> discord.Embed:
     embed.add_field(name="🟢 監視状態", value="稼働中", inline=True)
     embed.add_field(name="🔁 監視頻度", value=f"{POLL_INTERVAL_SECONDS}秒ごと", inline=True)
     embed.add_field(name="📢 通知チャンネル", value=channel.mention, inline=True)
-    embed.add_field(name="📣 @everyone 発動条件", value=f"M{EVERYONE_THRESHOLD}以上", inline=True)
+    embed.add_field(name="📣 @everyone 発動条件", value=EVERYONE_CONDITION_TEXT, inline=False)
     embed.add_field(name="🌐 データソース", value="P2P地震情報 / 気象庁（JMA）", inline=True)
     embed.add_field(
         name="💬 利用可能なコマンド",
@@ -250,9 +295,9 @@ class EarthquakeBot(discord.Client):
             embed.add_field(name="⏱️ 稼働時間", value=uptime, inline=True)
             embed.add_field(name="🔁 監視頻度", value=f"{POLL_INTERVAL_SECONDS}秒ごと", inline=True)
             embed.add_field(name="📢 通知チャンネル", value=ch, inline=True)
-            embed.add_field(name="📣 @everyone 発動条件", value=f"M{EVERYONE_THRESHOLD}以上", inline=True)
             embed.add_field(name="📊 検知済みイベント数", value=str(len(seen_event_ids)), inline=True)
-            embed.add_field(name="🌐 データソース", value="P2P地震情報 / 気象庁（JMA）", inline=False)
+            embed.add_field(name="🌐 データソース", value="P2P地震情報 / 気象庁（JMA）", inline=True)
+            embed.add_field(name="📣 @everyone 発動条件", value=EVERYONE_CONDITION_TEXT, inline=False)
             embed.set_footer(text=FOOTER_TEXT)
             await interaction.response.send_message(embed=embed)
 
@@ -275,7 +320,7 @@ class EarthquakeBot(discord.Client):
                 f"✅ テストアラート（M{magnitude:.1f}）を {self.alert_channel.mention} に送信しました。",
                 ephemeral=True,
             )
-            logger.info("Test alert by %s — M%.1f", interaction.user, magnitude)
+            logger.info("テストアラート送信: %s — M%.1f", interaction.user, magnitude)
 
         # ── /history ───────────────────────────────────────────────────────
         @self.tree.command(name="history", description="最近の地震履歴を表示します")
@@ -296,7 +341,7 @@ class EarthquakeBot(discord.Client):
                             return
                         data = await resp.json()
             except Exception as exc:
-                logger.error("History fetch failed: %s", exc)
+                logger.error("履歴取得失敗: %s", exc)
                 await interaction.followup.send("❌ データの取得中にエラーが発生しました。", ephemeral=True)
                 return
 
@@ -328,7 +373,6 @@ class EarthquakeBot(discord.Client):
 
                 depth_str = f"約{depth}km" if depth >= 0 else "不明"
                 scale_str = scale_label(max_scale) if max_scale > 0 else "不明"
-
                 mag_icon = "🔴" if mag >= 6.0 else "🟠" if mag >= 5.0 else "🟡" if mag >= 4.0 else "🔵"
 
                 value = (
@@ -388,16 +432,15 @@ class EarthquakeBot(discord.Client):
                 "初回ポール完了 — %d 件のイベントを読み込みました。新しい地震を監視中。",
                 len(seen_event_ids),
             )
-            startup_embed = build_startup_embed(self.alert_channel)
-            await self.alert_channel.send(embed=startup_embed)
+            await self.alert_channel.send(embed=build_startup_embed(self.alert_channel))
             return
 
         for quake in new_quakes:
             try:
                 embed, content = build_alert(quake)
                 await self.alert_channel.send(content=content, embed=embed)
-                mag = parse_quake(quake)["mag"]
-                logger.info("アラート送信: M%s", mag)
+                p = parse_quake(quake)
+                logger.info("アラート送信: M%s 最大震度=%s 津波=%s", p["mag"], p["max_scale"], p["tsunami"])
             except Exception as exc:
                 logger.error("アラート送信失敗: %s", exc)
 
