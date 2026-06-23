@@ -414,6 +414,53 @@ class EarthquakeBot(discord.Client):
             embed.set_footer(text=FOOTER_TEXT)
             await interaction.followup.send(embed=embed)
 
+        # ── /help ───────────────────────────────────────────────────────────
+        @self.tree.command(name="help", description="利用可能なコマンドの一覧を表示します")
+        async def help(interaction: discord.Interaction):
+            embed = discord.Embed(
+                title="📖 地震速報Bot コマンド一覧",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(
+                name="🔧 基本コマンド",
+                value=(
+                    "`/ping`\nBotの応答速度を確認します。\n\n"
+                    "`/status`\nBotの稼働状況や監視設定を表示します。"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🧪 テスト",
+                value=(
+                    "`/test [マグニチュード]`\n"
+                    "地震速報のテスト通知を送信します。\n"
+                    "マグニチュードを指定可能（1.0〜9.0、デフォルト: 6.5）。"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📜 履歴",
+                value=(
+                    "`/history [件数]`\n"
+                    "最近の地震履歴を表示します。\n"
+                    "件数を指定可能（1〜20、デフォルト: 5）。"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="ℹ️ 通知ルール",
+                value=(
+                    f"・震度3〜4 → @{EARTHQUAKE_ROLE_NAME}\n"
+                    "・震度5弱以上 → @everyone\n"
+                    "・津波注意報以上 → @everyone\n"
+                    "・大津波警報 → @everyone"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="地震速報Bot v1.0　|　" + FOOTER_TEXT)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
     async def setup_hook(self):
         await self.tree.sync()
         logger.info("スラッシュコマンドを同期しました")
