@@ -3,6 +3,8 @@ import os
 import logging
 import random
 import traceback
+import sys
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,6 +27,13 @@ logger = logging.getLogger(__name__)
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# バージョン情報
+# ──────────────────────────────────────────────────────────────────────────────
+BOT_VERSION = "v1.2.0"
+BUILD_DATE = "2026-06-27"
+VERSION_FILE = "bot_version.json"
 
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 DISCORD_CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
@@ -59,6 +68,82 @@ SAMPLE_LOCATIONS = [
     "東京都", "大阪府", "神奈川県", "愛知県", "宮城県",
     "北海道", "福岡県", "静岡県", "熊本県", "新潟県",
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# バージョン管理関数
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_last_announced_version() -> str:
+    """最後にアナウンスされたバージョンを読み込む"""
+    try:
+        if os.path.exists(VERSION_FILE):
+            with open(VERSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("last_announced_version", "")
+    except Exception as exc:
+        logger.warning("バージョンファイル読み込み失敗: %s", exc)
+    return ""
+
+
+def save_announced_version(version: str) -> None:
+    """アナウンスされたバージョンを保存"""
+    try:
+        with open(VERSION_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_announced_version": version}, f, ensure_ascii=False)
+        logger.info("バージョン情報を保存: %s", version)
+    except Exception as exc:
+        logger.error("バージョンファイル保存失敗: %s", exc)
+
+
+def build_update_announcement_embed() -> discord.Embed:
+    """アップデートアナウンスメント用Embedを作成"""
+    embed = discord.Embed(
+        title="📢 地震速報Bot アップデート",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    
+    embed.add_field(name="バージョン", value=f"**{BOT_VERSION}**", inline=False)
+    
+    embed.add_field(
+        name="【変更内容】",
+        value=(
+            "✅ `/version` コマンドを追加\n"
+            "✅ ログ機能を強化\n"
+            "✅ 24時間稼働の安定性を向上\n"
+            "✅ エラーハンドリングを改善\n"
+            "✅ 自動アップデートアナウンスを追加\n"
+            "✅ 通知ルールを更新\n"
+            "　• 震度3以上 → @地震速報 ロール\n"
+            "　• 津波注意報・津波警報・大津波警報・海外津波情報 → @everyone"
+        ),
+        inline=False,
+    )
+    
+    embed.add_field(
+        name="ℹ️ 通知ルール",
+        value=(
+            "🔔 **@地震速報**: 震度3以上\n"
+            "📢 **@everyone**: 津波注意報、津波警報、大津波警報、海外の大規模地震"
+        ),
+        inline=False,
+    )
+    
+    embed.add_field(
+        name="💬 コマンド",
+        value="`/ping`　`/status`　`/test`　`/history`　`/help`　`/version`",
+        inline=False,
+    )
+    
+    embed.add_field(
+        name="ご利用ありがとうございます",
+        value="いつもご利用ありがとうございます。\nご質問やご不具合がある場合はお気軽にお知らせください。",
+        inline=False,
+    )
+    
+    embed.set_footer(text=f"Build Date: {BUILD_DATE}　|　{FOOTER_TEXT}")
+    return embed
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +393,7 @@ def build_startup_embed(channel: discord.TextChannel) -> discord.Embed:
     embed.add_field(name="🌐 データソース", value="P2P地震情報 / 気象庁（JMA）", inline=True)
     embed.add_field(
         name="💬 利用可能なコマンド",
-        value="`/ping`　`/status`　`/test`　`/history`　`/help`",
+        value="`/ping`　`/status`　`/test`　`/history`　`/help`　`/version`",
         inline=False,
     )
     embed.set_footer(text=FOOTER_TEXT)
@@ -376,6 +461,35 @@ class EarthquakeBot(discord.Client):
                 inline=False,
             )
             embed.set_footer(text=FOOTER_TEXT)
+            await interaction.response.send_message(embed=embed)
+
+        # ── /version ───────────────────────────────────────────────────────
+        @self.tree.command(name="version", description="ボットのバージョン情報を表示します")
+        async def version(interaction: discord.Interaction):
+            uptime = "不明"
+            if self._monitor_start_time:
+                delta = datetime.now(timezone.utc) - self._monitor_start_time
+                h, rem = divmod(int(delta.total_seconds()), 3600)
+                m, s = divmod(rem, 60)
+                uptime = f"{h}時間 {m}分 {s}秒"
+
+            embed = discord.Embed(
+                title="ℹ️ 地震速報Bot — バージョン情報",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="🔖 Bot バージョン", value=BOT_VERSION, inline=True)
+            embed.add_field(name="📅 ビルド日付", value=BUILD_DATE, inline=True)
+            embed.add_field(name="🐍 Python バージョン", value=f"{sys.version.split()[0]}", inline=True)
+            embed.add_field(name="📚 discord.py バージョン", value=discord.__version__, inline=True)
+            embed.add_field(name="⏱️ 稼働時間", value=uptime, inline=True)
+            embed.add_field(name="🔁 監視間隔", value=f"{POLL_INTERVAL_SECONDS}秒ごと", inline=True)
+            embed.add_field(
+                name="📡 ステータス",
+                value="🟢 稼働中" if self._initial_poll_done else "🟡 初期化中",
+                inline=False,
+            )
+            embed.set_footer(text=f"{FOOTER_TEXT} | ビルド: {BUILD_DATE}")
             await interaction.response.send_message(embed=embed)
 
         # ── /test ─────────────────────────────────────────────────────────
@@ -483,6 +597,7 @@ class EarthquakeBot(discord.Client):
         COMMAND_META: dict[str, dict] = {
             "ping":    {"category": "🔧 基本コマンド", "params": "", "detail": "ボットのレスポンス速度を確認"},
             "status":  {"category": "🔧 基本コマンド", "params": "", "detail": "ボットの稼働状況と統計情報を表示"},
+            "version": {"category": "🔧 基本コマンド", "params": "", "detail": "ボットのバージョン情報を表示"},
             "test":    {"category": "🧪 テスト",       "params": " [マグニチュード]", "detail": "テスト地震アラートを送信"},
             "history": {"category": "📜 履歴",         "params": " [件数]", "detail": "最近の地震履歴を表示"},
             "help":    {"category": "🔧 基本コマンド", "params": "", "detail": "このヘルプを表示"},
@@ -552,7 +667,7 @@ class EarthquakeBot(discord.Client):
                 inline=False,
             )
 
-            embed.set_footer(text=f"登録コマンド数: {len(commands)}　|　地震速報Bot v1.1　|　{FOOTER_TEXT}")
+            embed.set_footer(text=f"登録コマンド数: {len(commands)}　|　地震速報Bot {BOT_VERSION}　|　{FOOTER_TEXT}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def setup_hook(self):
@@ -561,6 +676,8 @@ class EarthquakeBot(discord.Client):
 
     async def on_ready(self):
         logger.info("🔗 ログイン完了: %s (ID: %s)", self.user, self.user.id)
+        logger.info("🤖 現在のバージョン: %s (Build: %s)", BOT_VERSION, BUILD_DATE)
+        
         channel = self.get_channel(DISCORD_CHANNEL_ID)
         if channel is None:
             logger.error("❌ チャンネル %d が見つかりません — DISCORD_CHANNEL_ID を確認してください", DISCORD_CHANNEL_ID)
@@ -576,6 +693,20 @@ class EarthquakeBot(discord.Client):
                 logger.info("✅ ギルド '%s' にスラッシュコマンドを即時同期しました: %s", guild.name, [c.name for c in synced])
             except Exception as exc:
                 logger.error("❌ コマンド同期失敗: %s\n%s", exc, traceback.format_exc())
+            
+            # ── アップデートアナウンス処理 ──
+            last_version = load_last_announced_version()
+            if last_version != BOT_VERSION:
+                logger.info("📢 新しいバージョンが検出されました: %s → %s", last_version, BOT_VERSION)
+                try:
+                    announcement_embed = build_update_announcement_embed()
+                    await self.alert_channel.send(embed=announcement_embed)
+                    save_announced_version(BOT_VERSION)
+                    logger.info("✅ アップデートアナウンスを送信しました")
+                except Exception as exc:
+                    logger.error("❌ アップデートアナウンス送信失敗: %s\n%s", exc, traceback.format_exc())
+            else:
+                logger.info("✅ 既にアナウンス済みバージョン: %s", BOT_VERSION)
         
         self.check_earthquakes.start()
         logger.info("🚀 地震監視タスクを開始しました（間隔: %d秒）", POLL_INTERVAL_SECONDS)
@@ -689,6 +820,7 @@ def main():
     try:
         bot = EarthquakeBot()
         logger.info("🚀 ボットを起動しています...")
+        logger.info("📦 バージョン: %s (Build: %s)", BOT_VERSION, BUILD_DATE)
         bot.run(DISCORD_BOT_TOKEN, log_handler=None)
     except KeyboardInterrupt:
         logger.info("⏹️  キーボード割り込みで停止されました")
