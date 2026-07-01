@@ -13,9 +13,9 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 # ロギング設定：24/7安定運用向け
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -28,11 +28,11 @@ logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 # バージョン情報
-# ──────────────────────────────────────────────────────────────────────────────
-BOT_VERSION = "v1.2.0"
-BUILD_DATE = "2026-06-27"
+# ────────────────────────────────────────────────────────────────────────
+BOT_VERSION = "v1.3.0"
+BUILD_DATE = "2026-07-01"
 VERSION_FILE = "bot_version.json"
 
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
@@ -70,9 +70,9 @@ SAMPLE_LOCATIONS = [
 ]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 # バージョン管理関数
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────
 
 def load_last_announced_version() -> str:
     """最後にアナウンスされたバージョンを読み込む"""
@@ -116,7 +116,10 @@ def build_update_announcement_embed() -> discord.Embed:
             "✅ 自動アップデートアナウンスを追加\n"
             "✅ 通知ルールを更新\n"
             "　• 震度3以上 → @地震速報 ロール\n"
-            "　• 津波注意報・津波警報・大津波警報・海外津波情報 → @everyone"
+            "　• 津波注意報・津波警報・大津波警報・海外津波情報 → @everyone\n"
+            "✅ RESTful API エンドポイントを追加\n"
+            "✅ Webhook統合機能を実装\n"
+            "✅ メトリクス収集機能を追加"
         ),
         inline=False,
     )
@@ -329,7 +332,7 @@ def quake_to_embed(
         inline=True,
     )
     embed.add_field(
-        name="📊 最大震度",
+        name="📊 最大��度",
         value=scale_label(max_scale) if max_scale > 0 else "不明",
         inline=True,
     )
@@ -493,7 +496,7 @@ class EarthquakeBot(discord.Client):
             await interaction.response.send_message(embed=embed)
 
         # ── /test ─────────────────────────────────────────────────────────
-        @self.tree.command(name="test", description="テスト用の地震アラートを送信します")
+        @self.tree.command(name="test", description="テスト用の地震アラートを���信します")
         @app_commands.describe(magnitude="マグニチュード（1.0〜9.0、デフォルト: 6.5）")
         async def test(
             interaction: discord.Interaction,
